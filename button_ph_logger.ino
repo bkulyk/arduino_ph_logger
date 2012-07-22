@@ -45,17 +45,24 @@ void led_button_setup() {
   digitalWrite( buttonLed, HIGH ); 
 }
 
+void ph_setup() {
+  Serial3.begin( 38400 ); 
+  delay( 1000 );
+}
+
 void setup () {
   Serial.begin(115200);  
   ether_setup();
   led_button_setup();
+  ph_setup();
+  Serial.println( "setup finished" );
 }
 
 boolean isDown = false;
 
-void send_data_to_webservice( const char *data ) { 
+void send_data_to_webservice( String data ) { 
   String uri = "?data=";
-  uri += String(data);
+  uri += data;
   
   char charBuf[128];
   uri.toCharArray(charBuf, 128);
@@ -64,7 +71,10 @@ void send_data_to_webservice( const char *data ) {
 }
 
 void log_ph() {
-  send_data_to_webservice( "12345" );
+  Serial.println( "send command to ph probe" );
+  Serial3.write( 'r' );
+  Serial3.write( '\r' );
+  delay( 1000 );
 }
 
 void loop () {
@@ -80,4 +90,20 @@ void loop () {
     isDown = false;
   }
     
+}
+
+void serialEvent3() {
+  int a = Serial3.available();
+  if( a ) {
+    Serial.println( "ph data available" );
+    String output = "";
+    //String output = "";
+    for( int i=0; i<a; i++ ) {
+      output += (char)Serial3.read();
+      //Serial.print( (char)Serial3.read() );
+    }
+    Serial.print( "pH reading: " );
+    Serial.println( output );
+    send_data_to_webservice( output );
+  }
 }
