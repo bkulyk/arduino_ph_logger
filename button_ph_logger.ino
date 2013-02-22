@@ -1,4 +1,5 @@
-String api_key = "rlhc";
+//String api_key = "rlhc";
+char api_key[] = "rlhc";
 
 // https://github.com/jcw/ethercard
 #include <EtherCard.h>
@@ -25,55 +26,81 @@ const int buttonLed4 = 26; // blue
 Button button4 = Button( 28, BUTTON_PULLDOWN );
 boolean isDown4 = false;
 
+// every half hour I want to take a ph reading, but I only want to send the data to the web service every hour
+boolean timer_toggle = false;
+boolean do_webservice = true;
+void timers_up() {
+  Serial.println( "timer's up" );
+  if( timer_toggle ) {
+    do_webservice = true;
+    log_ph();
+    timer_toggle = false;
+  }else{
+    do_webservice = false;
+    log_ph();
+    timer_toggle = true;
+  }
+}
+
 //timed action stuff
-TimedAction timedAction = TimedAction( 1000 * 60 * 5/*60*/, log_ph ); // once an hour
+//TimedAction timedAction = TimedAction( 30 * 1000, timers_up ); // 30 seconds
+TimedAction timedAction = TimedAction( 1800000, timers_up ); // 1/2 hour
 
 // ethercard stuff
 #define REQUEST_RATE 5000 // milliseconds
 // ethernet interface mac address
 static byte mymac[] = { 0x74,0x69,0x69,0x2D,0x30,0x31 };
 // ethernet interface ip address
-static byte myip[] = { 192,168,1,203 };
+//static byte myip[] = { 192,168,1,203 };
+static byte myip[] = { 10,1,1,179 };
 // gateway ip address
-static byte gwip[] = { 192,168,1,1 };
+//static byte gwip[] = { 192,168,1,1 };
+static byte gwip[] = { 10,1,1,21 };
 // remote website ip address and port
 // not sure why, but I have to supply the ip and the url
 //static byte hisip[] = { 23,23,125,242 };
 static byte hisip[] = { 192,168,1,157 };
-//char website[] PROGMEM = "hydromon.axexsoftware.com";
-char website[] PROGMEM = "192.168.1.157";
+char website[] PROGMEM = "hydromon.axexsoftware.com";
+//char website[] PROGMEM = "192.168.1.157";
 byte Ethernet::buffer[300];   // a very small tcp/ip buffer is enough here
 static long timer;
 // called when the client request is complete
-static void my_result_cb( byte status, word off, word len ) { }
+static void my_result_cb( byte status, word off, word len ) {
+  Serial.println( "sent data to website" );   
+}
 
-void ether_setup() {
-  Serial.println( "here" );
-  
+void ether_setup() {  
   lcd_clear();
   lcd_print( "Init Ethetnet" );
-  lcd_second_line();
-  lcd_print( "192.168.1.203" );
   
   if( ether.begin(sizeof Ethernet::buffer, mymac) == 0 ) {
     Serial.println( "Failed to access Ethernet controller");
     lcd_clear();
     lcd_print( "Ethernet Failed" );
+  }else{
+    lcd_second_line();
+    lcd_print( "10.1.1.179" );
+
+    ether.staticSetup(myip, gwip);
+    
+    ether.copyIp(ether.hisip, hisip);
+    ether.printIp("Server: ", ether.hisip);
+
+    while (ether.clientWaitingGw())
+      ether.packetLoop(ether.packetReceive());
+    Serial.println("Gateway found");
+  
+    lcd_second_line();
+    lcd_print( "Gateway Found" );
+  
+    timer = - REQUEST_RATE; // start timing out right away
+  
+    // lookup the ip of the website
+    if( !ether.dnsLookup( website ) )
+      Serial.println("DNS failed");
+    ether.printIp("Server: ", ether.hisip);
+  
   }
-
-  ether.staticSetup(myip, gwip);
-
-  ether.copyIp(ether.hisip, hisip);
-  ether.printIp("Server: ", ether.hisip);
-
-  while (ether.clientWaitingGw())
-    ether.packetLoop(ether.packetReceive());
-  Serial.println("Gateway found");
-  
-  lcd_second_line();
-  lcd_print( "Gateway Found" );
-  
-  timer = - REQUEST_RATE; // start timing out right away
 }
 
 void led_button_setup() {
@@ -111,25 +138,22 @@ void ph_setup() {
 void setup () {
   Serial.begin(115200);  
   lcd_setup();
-  led_button_setup();
   ether_setup();
+  led_button_setup();
   ph_setup();
   Serial.println( "setup finished" );
   lcd_clear();
   log_ph();
   lcd_clear();
   lcd_print( "Ready..." );
+  log_ph();
 }
 
-void send_data_to_webservice( String data ) { 
-  String uri = "?api_key="+api_key+"&data=";
-  uri += data;
-  
-  char charBuf[128];
-  uri.toCharArray(charBuf, 128);
-  
-  // submit a GET request sending the data.  Should be a POST, but this is good for now.
-  ether.browseUrl( PSTR("/reading/submit/ph"), charBuf, website, &my_result_cb );
+void send_reading_to_webservice( char* reading ) {
+  char uri[255];
+  sprintf( uri, "?api_key=%s&data=%s", api_key, reading );
+  ether.browseUrl( PSTR("/reading/submit/ph"), uri, website, &my_result_cb );
+  do_webservice = false;
 }
 
 void send_data_to_lcd( String data ) {
@@ -145,8 +169,7 @@ boolean do_ph = true;
 
 void log_ph() {  
   lcd_clear();
-  //lcd_print( "green" );
-  //lcd_print( "" );
+  lcd_print( "Reading pH" );
   
   Serial.println( "send command to ph probe" );
   // send the read command and then, send a \r to tell it the command is done
@@ -219,18 +242,23 @@ void loop () {
 
 void serialEvent3() {
   int a = Serial3.available();
+  char chars[a];
   if( a ) {
     Serial.println( "ph data available" );
     String output = "";
     for( int i=0; i<a; i++ ) {
       char c = (char)Serial3.read();
-      if( c != '\r' )
+      if( c != '\r' ) {
         output += c;
+        chars[i] = c;
+      }
     }
     if( ph_action == 'r' ) { // don't do this if we are calibrating, only if we are getting a reading
       Serial.print( "pH reading: " );
       Serial.println( output );
-      send_data_to_webservice( output );
+      if( do_webservice ) {
+        send_reading_to_webservice( chars );
+      }
       send_data_to_lcd( "pH: " + output );
     }
   }
@@ -242,6 +270,7 @@ void button_loop() {
     digitalWrite( buttonLed1, LOW );
     if( !isDown1 ) {
       Serial.println( "green" );
+      do_webservice = true;
       log_ph();
     }
     isDown1 = true;
